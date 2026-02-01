@@ -4,7 +4,7 @@ from datetime import datetime
 import pytz
 import os
 
-# Environment variables (set these in Railway)
+# Environment variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
@@ -13,9 +13,13 @@ CHECK_INTERVAL = 60  # Check every 60 seconds
 
 # Global state
 base_price = None
+session_high = None
+session_low = None
+
 high_alert_sent = False
 low_alert_sent = False
-daily_alert_sent_today = False
+daily_start_alert_sent = False
+daily_close_alert_sent = False
 
 def get_btc_price():
     """Fetch BTC price from Binance, fallback to CoinGecko"""
@@ -34,149 +38,164 @@ def send_telegram(message):
     """Send message to Telegram"""
     try:
         payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'HTML'}
-        response = requests.post(TELEGRAM_API_URL, data=payload, timeout=10)
-        response.raise_for_status()
-        print(f"✅ Message sent at {datetime.now(pytz.timezone('Asia/Kolkata'))}")
+        requests.post(TELEGRAM_API_URL, data=payload, timeout=10)
+        print(f"✅ Message sent.")
         return True
     except Exception as e:
         print(f"❌ Error sending message: {e}")
         return False
 
-def send_daily_alert(price):
-    """Send daily 8 AM alert"""
-    global base_price, high_alert_sent, low_alert_sent, daily_alert_sent_today
+def reset_daily_stats(price):
+    """Reset all trackers at 8:00 AM"""
+    global base_price, session_high, session_low, high_alert_sent, low_alert_sent
+    global daily_start_alert_sent, daily_close_alert_sent
     
-    base_price = round(price, 2)
-    high_level = round(base_price * 1.02, 2)
-    low_level = round(base_price * 0.98, 2)
+    base_price = price
+    session_high = price
+    session_low = price
     
-    message = f"""
-🔔 <b>BTC/USD Daily Alert</b> 🔔
-⏰ Time: 8:00 AM IST
-
-📊 <b>Base Price:</b> ${base_price:,.2f}
-
-📈 <b>High Alert (+2%):</b> ${high_level:,.2f}
-📉 <b>Low Alert (-2%):</b> ${low_level:,.2f}
-
-━━━━━━━━━━━━━━━━━━━━
-🔍 Monitoring active!
-You'll get alerts when price hits these levels!
-    """.strip()
-    
-    send_telegram(message)
+    # Reset alert flags
     high_alert_sent = False
     low_alert_sent = False
-    daily_alert_sent_today = True
-    print(f"📊 Daily alert sent - Base Price: ${base_price:,.2f}")
+    daily_start_alert_sent = True
+    daily_close_alert_sent = False  # Reset so 5:30 PM report can run
+    
+    send_start_report(price)
 
-def check_alerts(price):
-    """Check if price hit ±2% thresholds"""
-    global high_alert_sent, low_alert_sent, base_price
+def update_session_stats(price):
+    """Track the highest and lowest price since 8:00 AM"""
+    global session_high, session_low
+    
+    if session_high is None: 
+        session_high = price
+        session_low = price
+
+    if price > session_high:
+        session_high = price
+    if price < session_low:
+        session_low = price
+
+def send_start_report(price):
+    """8:00 AM Entry Report"""
+    high_level = price * 1.02
+    low_level = price * 0.98
+    
+    message = f"""
+🌅 <b>Market Open (8:00 AM) - Entry Taken</b>
+
+📉 <b>Spot Price:</b> ${price:,.2f}
+
+🛡️ <b>Selling 2% OTM Strikes:</b>
+🔴 <b>Call Sell Level (+2%):</b> ${high_level:,.2f}
+🟢 <b>Put Sell Level (-2%):</b> ${low_level:,.2f}
+
+<i>Tracking performance until 5:30 PM...</i>
+    """.strip()
+    send_telegram(message)
+
+def send_closing_report(current_price):
+    """5:30 PM Performance Report"""
+    global daily_close_alert_sent
     
     if not base_price:
         return
+
+    # Calculate max moves in percentage
+    max_up_move_pct = ((session_high - base_price) / base_price) * 100
+    max_down_move_pct = ((session_low - base_price) / base_price) * 100
+    
+    # Determine Success or Failure
+    # Success = Price never touched +2% or -2%
+    failed_high = session_high >= (base_price * 1.02)
+    failed_low = session_low <= (base_price * 0.98)
+    
+    if failed_high or failed_low:
+        status = "❌ <b>FAILURE</b> (Stop Loss Hit)"
+        result_text = "Price moved OUTSIDE the 2% range."
+    else:
+        status = "✅ <b>SUCCESS</b> (Premium Collected)"
+        result_text = "Price stayed INSIDE the 2% range."
+
+    message = f"""
+🏁 <b>Market Close Report (5:30 PM)</b>
+
+{status}
+{result_text}
+
+📊 <b>Session Stats (8am - 5:30pm):</b>
+🔹 <b>Entry Price:</b> ${base_price:,.2f}
+🔹 <b>Current Price:</b> ${current_price:,.2f}
+
+📈 <b>Max High Move:</b> +{max_up_move_pct:.2f}%  (High: ${session_high:,.2f})
+📉 <b>Max Low Move:</b> {max_down_move_pct:.2f}%  (Low: ${session_low:,.2f})
+
+<i>Resetting for tomorrow...</i>
+    """.strip()
+    
+    send_telegram(message)
+    daily_close_alert_sent = True
+
+def check_instant_alerts(price):
+    """Check for immediate breakouts"""
+    global high_alert_sent, low_alert_sent, base_price
+    
+    if not base_price: return
     
     high_level = base_price * 1.02
     low_level = base_price * 0.98
-    change = ((price - base_price) / base_price) * 100
     
-    # HIGH alert
     if price >= high_level and not high_alert_sent:
-        message = f"""
-🚨 <b>HIGH ALERT TRIGGERED!</b> 🚨
-
-📈 BTC has reached +2% level!
-
-📊 <b>Base Price:</b> ${base_price:,.2f}
-💰 <b>Current Price:</b> ${price:,.2f}
-📊 <b>Change:</b> +{change:.2f}%
-
-⏰ Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M %p IST')}
-
-🎯 Target: ${round(high_level, 2):,.2f}
-        """.strip()
-        send_telegram(message)
+        send_telegram(f"🚨 <b>BREAKOUT ALERT!</b>\nPrice hit +2% High!\nCurrent: ${price:,.2f}")
         high_alert_sent = True
-        print(f"🚨 HIGH ALERT SENT! Price: ${price:,.2f}")
     
-    # LOW alert
     elif price <= low_level and not low_alert_sent:
-        message = f"""
-🚨 <b>LOW ALERT TRIGGERED!</b> 🚨
-
-📉 BTC has reached -2% level!
-
-📊 <b>Base Price:</b> ${base_price:,.2f}
-💰 <b>Current Price:</b> ${price:,.2f}
-📊 <b>Change:</b> {change:.2f}%
-
-⏰ Time: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M %p IST')}
-
-🎯 Target: ${round(low_level, 2):,.2f}
-        """.strip()
-        send_telegram(message)
+        send_telegram(f"🚨 <b>BREAKDOWN ALERT!</b>\nPrice hit -2% Low!\nCurrent: ${price:,.2f}")
         low_alert_sent = True
-        print(f"🚨 LOW ALERT SENT! Price: ${price:,.2f}")
 
 def main():
-    """Main monitoring loop"""
-    global base_price, daily_alert_sent_today
+    global daily_start_alert_sent, daily_close_alert_sent, base_price
     
-    print("🚀 BTC Price Alert Bot Started!")
-    print(f"⏰ Current Time: {datetime.now(pytz.timezone('Asia/Kolkata'))}")
-    print(f"🔍 Checking price every {CHECK_INTERVAL} seconds")
-    print("="*60)
+    print("🚀 Bot Started - Tracking 8AM to 5:30PM Strategy")
     
-    # Initialize base price
-    initial_price = get_btc_price()
-    if initial_price:
-        base_price = round(initial_price, 2)
-        print(f"📊 Initial Base Price: ${base_price:,.2f}")
-        print(f"📈 High Alert Level (+2%): ${round(base_price * 1.02, 2):,.2f}")
-        print(f"📉 Low Alert Level (-2%): ${round(base_price * 0.98, 2):,.2f}")
-        print("="*60)
-    
-    last_check_date = None
-    
-    # Main loop
+    # Initialize with current price if restarting mid-day
+    current_price = get_btc_price()
+    if current_price:
+        base_price = current_price
+        update_session_stats(current_price)
+
     while True:
         try:
             current_price = get_btc_price()
             
             if current_price:
                 now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
-                current_date = now_ist.strftime('%Y-%m-%d')
                 
-                # Reset daily flag at new day
-                if last_check_date != current_date:
-                    daily_alert_sent_today = False
-                    last_check_date = current_date
+                # 1. 8:00 AM - Reset & Entry
+                if now_ist.hour == 8 and now_ist.minute == 0 and not daily_start_alert_sent:
+                    reset_daily_stats(current_price)
                 
-                # Send daily alert at 8:00 AM IST
-                if now_ist.hour == 8 and now_ist.minute == 0 and not daily_alert_sent_today:
-                    send_daily_alert(current_price)
+                # 2. Reset flags for next day (at midnight)
+                if now_ist.hour == 0 and now_ist.minute == 0:
+                     daily_start_alert_sent = False
                 
-                # Check price thresholds
-                check_alerts(current_price)
-                
-                # Print current status
+                # 3. Update High/Low stats
                 if base_price:
-                    change = ((current_price - base_price) / base_price) * 100
-                    print(f"[{now_ist.strftime('%I:%M:%S %p')}] Price: ${current_price:,.2f} | Change: {change:+.2f}%")
+                    update_session_stats(current_price)
+                    check_instant_alerts(current_price)
+                
+                # 4. 5:30 PM - Report
+                if now_ist.hour == 17 and now_ist.minute == 30 and not daily_close_alert_sent:
+                    send_closing_report(current_price)
+
+                # Log to console
+                if base_price:
+                    print(f"[{now_ist.strftime('%H:%M')}] ${current_price:,.0f} | High: ${session_high:,.0f} | Low: ${session_low:,.0f}")
             
             time.sleep(CHECK_INTERVAL)
             
-        except KeyboardInterrupt:
-            print("\n🛑 Bot stopped")
-            break
         except Exception as e:
-            print(f"❌ Error in main loop: {e}")
+            print(f"Error: {e}")
             time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    if not CHAT_ID or not BOT_TOKEN:
-        print("\n⚠️  ERROR: Set BOT_TOKEN and CHAT_ID in Railway environment variables!")
-        print("Go to Railway dashboard → Variables tab → Add them\n")
-    else:
-        main()
+    main()
