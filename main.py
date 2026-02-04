@@ -1,201 +1,176 @@
+import logging
 import requests
-import time
-from datetime import datetime
-import pytz
+import math
 import os
+import pytz
+from datetime import datetime
+from telegram import Update
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# Environment variables
+# --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
+CHAT_ID = os.environ.get('CHAT_ID')  # Still needed for auto-alerts
+CHECK_INTERVAL = 360  # Check every 60 seconds
 
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-CHECK_INTERVAL = 60  # Check every 60 seconds
+# Risk Calculator Config (INR 1000 Risk)
+RISK_PER_DAY_USD = 11.76  # approx 1000 INR
+CONSTANT_FACTOR = RISK_PER_DAY_USD / 0.003  # ~3920
 
-# Global state
+# Global State for Strategy
 base_price = None
 session_high = None
 session_low = None
-
 high_alert_sent = False
 low_alert_sent = False
 daily_start_alert_sent = False
 daily_close_alert_sent = False
 
-def get_btc_price():
-    """Fetch BTC price from Binance, fallback to CoinGecko"""
+# Setup Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# --- PART 1: TRADING CALCULATOR (c24 p42) ---
+
+def calculate_leg_math(premium):
     try:
-        response = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
-        response.raise_for_status()
-        return float(response.json()['price'])
+        p = float(premium)
+        if p <= 0: return 0, 0
+        sl_price = p * 5  # SL is 400% of premium (Entry + 4x)
+        lots = math.floor(CONSTANT_FACTOR / p) 
+        return int(sl_price), int(lots)
+    except:
+        return 0, 0
+
+async def handle_calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Listens for 'c24 p42' and replies with Lot Size"""
+    text = update.message.text.lower().strip()
+    
+    # Try to parse "c24 p42" or "c 24 p 42"
+    if 'c' in text and 'p' in text:
+        try:
+            parts = text.replace("c", "").replace("p", " ").split()
+            if len(parts) >= 2:
+                call_prem, put_prem = parts[0], parts[1]
+                
+                c_sl, c_lots = calculate_leg_math(call_prem)
+                p_sl, p_lots = calculate_leg_math(put_prem)
+
+                response = (
+                    f"📊 **Risk Calculator (1k INR)**\n"
+                    f"-----------------------------\n"
+                    f"📈 **CALL ($ {call_prem})**\n"
+                    f"• **SL Price:** ${c_sl}\n"
+                    f"• **Qty:** {c_lots} Contracts\n"
+                    f"-----------------------------\n"
+                    f"📉 **PUT ($ {put_prem})**\n"
+                    f"• **SL Price:** ${p_sl}\n"
+                    f"• **Qty:** {p_lots} Contracts"
+                )
+                await update.message.reply_text(response, parse_mode='Markdown')
+                return
+        except Exception as e:
+            pass # Ignore errors, might be normal chat
+
+# --- PART 2: AUTOMATED MARKET MONITOR ---
+
+def get_btc_price():
+    """Fetch BTC price from Binance/CoinGecko"""
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
+        return float(r.json()['price'])
     except:
         try:
-            response = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=10)
-            return float(response.json()['bitcoin']['usd'])
+            r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=10)
+            return float(r.json()['bitcoin']['usd'])
         except:
             return None
 
-def send_telegram(message):
-    """Send message to Telegram"""
-    try:
-        payload = {'chat_id': CHAT_ID, 'text': message, 'parse_mode': 'HTML'}
-        requests.post(TELEGRAM_API_URL, data=payload, timeout=10)
-        print(f"✅ Message sent.")
-        return True
-    except Exception as e:
-        print(f"❌ Error sending message: {e}")
-        return False
+async def market_monitor_job(context: ContextTypes.DEFAULT_TYPE):
+    """Runs every 60 seconds to check Strategy Rules"""
+    global base_price, session_high, session_low
+    global high_alert_sent, low_alert_sent, daily_start_alert_sent, daily_close_alert_sent
 
-def reset_daily_stats(price):
-    """Reset all trackers at 8:00 AM"""
-    global base_price, session_high, session_low, high_alert_sent, low_alert_sent
-    global daily_start_alert_sent, daily_close_alert_sent
-    
-    base_price = price
-    session_high = price
-    session_low = price
-    
-    # Reset alert flags
-    high_alert_sent = False
-    low_alert_sent = False
-    daily_start_alert_sent = True
-    daily_close_alert_sent = False  # Reset so 5:30 PM report can run
-    
-    send_start_report(price)
-
-def update_session_stats(price):
-    """Track the highest and lowest price since 8:00 AM"""
-    global session_high, session_low
-    
-    if session_high is None: 
-        session_high = price
-        session_low = price
-
-    if price > session_high:
-        session_high = price
-    if price < session_low:
-        session_low = price
-
-def send_start_report(price):
-    """8:00 AM Entry Report"""
-    high_level = price * 1.02
-    low_level = price * 0.98
-    
-    message = f"""
-🌅 <b>Market Open (8:00 AM) - Entry Taken</b>
-
-📉 <b>Spot Price:</b> ${price:,.2f}
-
-🛡️ <b>Selling 2% OTM Strikes:</b>
-🔴 <b>Call Sell Level (+2%):</b> ${high_level:,.2f}
-🟢 <b>Put Sell Level (-2%):</b> ${low_level:,.2f}
-
-<i>Tracking performance until 5:30 PM...</i>
-    """.strip()
-    send_telegram(message)
-
-def send_closing_report(current_price):
-    """5:30 PM Performance Report"""
-    global daily_close_alert_sent
-    
-    if not base_price:
-        return
-
-    # Calculate max moves in percentage
-    max_up_move_pct = ((session_high - base_price) / base_price) * 100
-    max_down_move_pct = ((session_low - base_price) / base_price) * 100
-    
-    # Determine Success or Failure
-    # Success = Price never touched +2% or -2%
-    failed_high = session_high >= (base_price * 1.02)
-    failed_low = session_low <= (base_price * 0.98)
-    
-    if failed_high or failed_low:
-        status = "❌ <b>FAILURE</b> (Stop Loss Hit)"
-        result_text = "Price moved OUTSIDE the 2% range."
-    else:
-        status = "✅ <b>SUCCESS</b> (Premium Collected)"
-        result_text = "Price stayed INSIDE the 2% range."
-
-    message = f"""
-🏁 <b>Market Close Report (5:30 PM)</b>
-
-{status}
-{result_text}
-
-📊 <b>Session Stats (8am - 5:30pm):</b>
-🔹 <b>Entry Price:</b> ${base_price:,.2f}
-🔹 <b>Current Price:</b> ${current_price:,.2f}
-
-📈 <b>Max High Move:</b> +{max_up_move_pct:.2f}%  (High: ${session_high:,.2f})
-📉 <b>Max Low Move:</b> {max_down_move_pct:.2f}%  (Low: ${session_low:,.2f})
-
-<i>Resetting for tomorrow...</i>
-    """.strip()
-    
-    send_telegram(message)
-    daily_close_alert_sent = True
-
-def check_instant_alerts(price):
-    """Check for immediate breakouts"""
-    global high_alert_sent, low_alert_sent, base_price
-    
-    if not base_price: return
-    
-    high_level = base_price * 1.02
-    low_level = base_price * 0.98
-    
-    if price >= high_level and not high_alert_sent:
-        send_telegram(f"🚨 <b>BREAKOUT ALERT!</b>\nPrice hit +2% High!\nCurrent: ${price:,.2f}")
-        high_alert_sent = True
-    
-    elif price <= low_level and not low_alert_sent:
-        send_telegram(f"🚨 <b>BREAKDOWN ALERT!</b>\nPrice hit -2% Low!\nCurrent: ${price:,.2f}")
-        low_alert_sent = True
-
-def main():
-    global daily_start_alert_sent, daily_close_alert_sent, base_price
-    
-    print("🚀 Bot Started - Tracking 8AM to 5:30PM Strategy")
-    
-    # Initialize with current price if restarting mid-day
     current_price = get_btc_price()
-    if current_price:
+    if not current_price: return
+
+    # Get Time in India
+    now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
+    
+    # Update Session High/Low if tracking
+    if base_price:
+        if session_high is None: session_high = current_price
+        if session_low is None: session_low = current_price
+        session_high = max(session_high, current_price)
+        session_low = min(session_low, current_price)
+
+    # --- RULE 1: 8:00 AM START ---
+    if now_ist.hour == 8 and now_ist.minute == 0 and not daily_start_alert_sent:
+        # Reset Everything
         base_price = current_price
-        update_session_stats(current_price)
+        session_high = current_price
+        session_low = current_price
+        high_alert_sent = False
+        low_alert_sent = False
+        daily_start_alert_sent = True
+        daily_close_alert_sent = False
+        
+        high_level = current_price * 1.02
+        low_level = current_price * 0.98
+        
+        msg = (f"🌅 <b>8:00 AM Entry Alert</b>\n\n"
+               f"📉 Spot: ${current_price:,.2f}\n"
+               f"🛡️ <b>Sell Zones (2% OTM):</b>\n"
+               f"🔴 Call Strike: ~${high_level:,.0f}\n"
+               f"🟢 Put Strike: ~${low_level:,.0f}")
+        await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
 
-    while True:
-        try:
-            current_price = get_btc_price()
-            
-            if current_price:
-                now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
-                
-                # 1. 8:00 AM - Reset & Entry
-                if now_ist.hour == 8 and now_ist.minute == 0 and not daily_start_alert_sent:
-                    reset_daily_stats(current_price)
-                
-                # 2. Reset flags for next day (at midnight)
-                if now_ist.hour == 0 and now_ist.minute == 0:
-                     daily_start_alert_sent = False
-                
-                # 3. Update High/Low stats
-                if base_price:
-                    update_session_stats(current_price)
-                    check_instant_alerts(current_price)
-                
-                # 4. 5:30 PM - Report
-                if now_ist.hour == 17 and now_ist.minute == 30 and not daily_close_alert_sent:
-                    send_closing_report(current_price)
+    # --- RULE 2: RESET FLAGS AT MIDNIGHT ---
+    if now_ist.hour == 0 and now_ist.minute == 0:
+        daily_start_alert_sent = False
 
-                # Log to console
-                if base_price:
-                    print(f"[{now_ist.strftime('%H:%M')}] ${current_price:,.0f} | High: ${session_high:,.0f} | Low: ${session_low:,.0f}")
-            
-            time.sleep(CHECK_INTERVAL)
-            
-        except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(CHECK_INTERVAL)
+    # --- RULE 3: BREAKOUT ALERTS ---
+    if base_price:
+        high_limit = base_price * 1.02
+        low_limit = base_price * 0.98
 
-if __name__ == "__main__":
-    main()
+        if current_price >= high_limit and not high_alert_sent:
+            await context.bot.send_message(chat_id=CHAT_ID, text=f"🚨 <b>BREAKOUT (+2%)</b>\nPrice: ${current_price:,.2f}", parse_mode='HTML')
+            high_alert_sent = True
+        
+        if current_price <= low_limit and not low_alert_sent:
+            await context.bot.send_message(chat_id=CHAT_ID, text=f"🚨 <b>BREAKDOWN (-2%)</b>\nPrice: ${current_price:,.2f}", parse_mode='HTML')
+            low_alert_sent = True
+
+    # --- RULE 4: 5:30 PM REPORT ---
+    if now_ist.hour == 17 and now_ist.minute == 30 and not daily_close_alert_sent:
+        if base_price:
+            failed = (session_high >= base_price * 1.02) or (session_low <= base_price * 0.98)
+            status = "❌ <b>STOP LOSS HIT</b>" if failed else "✅ <b>PROFIT (Expired)</b>"
+            
+            msg = (f"🏁 <b>5:30 PM Close Report</b>\n\n{status}\n"
+                   f"Entry: ${base_price:,.0f}\n"
+                   f"High: ${session_high:,.0f}\n"
+                   f"Low: ${session_low:,.0f}")
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+            daily_close_alert_sent = True
+            
+    print(f"Checked: ${current_price} at {now_ist.strftime('%H:%M')}")
+
+# --- MAIN EXECUTION ---
+if __name__ == '__main__':
+    if not BOT_TOKEN:
+        print("Error: BOT_TOKEN not found!")
+        exit(1)
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Add Calculator Handler (Listens for text)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_calculator))
+
+    # Add Market Monitor (Runs every 60s)
+    app.job_queue.run_repeating(market_monitor_job, interval=60, first=10)
+
+    print("🚀 Bot is Running...")
+    app.run_polling()
