@@ -145,20 +145,20 @@ async def run_market_monitor(app):
             print(f"Error in monitor: {e}")
             await asyncio.sleep(60)
 
+async def post_init(application):
+    """Called after the bot starts - creates the background task"""
+    asyncio.create_task(run_market_monitor(application))
+
 if __name__ == '__main__':
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN not found!")
         exit(1)
 
     # Initialize Bot
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     
     # Add Calculator Handler
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_calculator))
 
-    # Run Bot + Monitor together
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_market_monitor(app))
-    
     print("🤖 Bot is Running...")
     app.run_polling()
