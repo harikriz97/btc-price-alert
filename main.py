@@ -27,6 +27,7 @@ daily_start_alert_sent = False
 daily_close_alert_sent = False
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- PART 1: SL CALCULATOR (Input: "c24 p42") ---
 
@@ -65,8 +66,8 @@ async def handle_calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"• **Qty:** {p_lots} Lots"
                 )
                 await update.message.reply_text(response, parse_mode='Markdown')
-        except:
-            pass 
+        except Exception as e:
+            logger.error(f"Calculator error: {e}")
 
 # --- PART 2: AUTO MARKET MONITOR ---
 
@@ -74,7 +75,8 @@ def get_btc_price():
     try:
         r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
         return float(r.json()['price'])
-    except:
+    except Exception as e:
+        logger.error(f"Error fetching BTC price: {e}")
         return None
 
 async def run_market_monitor(app):
@@ -82,7 +84,7 @@ async def run_market_monitor(app):
     global base_price, session_high, session_low, high_alert_sent, low_alert_sent
     global daily_start_alert_sent, daily_close_alert_sent
 
-    print("🚀 Market Monitor Started...")
+    logger.info("🚀 Market Monitor Started...")
     
     while True:
         try:
@@ -142,23 +144,67 @@ async def run_market_monitor(app):
 
             await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
-            print(f"Error in monitor: {e}")
+            logger.error(f"Error in monitor: {e}")
             await asyncio.sleep(60)
 
 async def post_init(application):
     """Called after the bot starts - creates the background task"""
+    logger.info("Post-init: Starting background monitor task")
     asyncio.create_task(run_market_monitor(application))
 
 if __name__ == '__main__':
-    if not BOT_TOKEN:
-        print("Error: BOT_TOKEN not found!")
-        exit(1)
-
-    # Initialize Bot
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    # Detailed startup checks
+    logger.info("=" * 50)
+    logger.info("BTC Price Alert Bot Starting...")
+    logger.info("=" * 50)
     
-    # Add Calculator Handler
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_calculator))
-
-    print("🤖 Bot is Running...")
-    app.run_polling()
+    if not BOT_TOKEN:
+        logger.error("❌ ERROR: BOT_TOKEN environment variable is not set!")
+        logger.error("Please set BOT_TOKEN in Railway environment variables")
+        exit(1)
+    
+    # Validate token format
+    if not BOT_TOKEN.count(':') == 1 or len(BOT_TOKEN) < 40:
+        logger.error(f"❌ ERROR: BOT_TOKEN format appears invalid")
+        logger.error(f"Token should be in format: 1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ")
+        logger.error(f"Current token length: {len(BOT_TOKEN)} characters")
+        exit(1)
+    
+    logger.info(f"✅ BOT_TOKEN found (length: {len(BOT_TOKEN)})")
+    logger.info(f"✅ Token format appears valid")
+    
+    if not CHAT_ID:
+        logger.warning("⚠️  WARNING: CHAT_ID not set - alerts will fail!")
+        logger.warning("Please set CHAT_ID in Railway environment variables")
+    else:
+        logger.info(f"✅ CHAT_ID found: {CHAT_ID}")
+    
+    try:
+        logger.info("🔧 Building Telegram Application...")
+        app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+        logger.info("✅ Application built successfully")
+        
+        # Add Calculator Handler
+        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_calculator))
+        logger.info("✅ Message handlers registered")
+        
+        logger.info("🚀 Starting bot polling...")
+        logger.info("=" * 50)
+        app.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error("=" * 50)
+        logger.error(f"❌ FATAL ERROR: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error("=" * 50)
+        logger.error("\nPossible causes:")
+        logger.error("1. Invalid bot token - check if token is correct")
+        logger.error("2. Bot was deleted in @BotFather")
+        logger.error("3. Network connectivity issues")
+        logger.error("4. Token has extra spaces or quotes")
+        logger.error("\nTo fix:")
+        logger.error("1. Go to @BotFather on Telegram")
+        logger.error("2. Create a new bot or get your existing bot token")
+        logger.error("3. Update BOT_TOKEN in Railway environment variables")
+        logger.error("4. Make sure there are no spaces or quotes around the token")
+        raise
