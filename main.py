@@ -72,12 +72,34 @@ async def handle_calculator(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- PART 2: AUTO MARKET MONITOR ---
 
 def get_btc_price():
+    """Fetch BTC price from Binance with fallback to CoinGecko"""
     try:
+        # Try Binance first
         r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
-        return float(r.json()['price'])
+        data = r.json()
+        
+        # Check if response has the expected format
+        if isinstance(data, dict) and 'price' in data:
+            return float(data['price'])
+        
+        # If format is different, log it
+        logger.warning(f"Unexpected Binance response format: {data}")
+        
     except Exception as e:
-        logger.error(f"Error fetching BTC price: {e}")
-        return None
+        logger.error(f"Binance API error: {e}")
+    
+    # Fallback to CoinGecko
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", timeout=10)
+        data = r.json()
+        if 'bitcoin' in data and 'usd' in data['bitcoin']:
+            price = float(data['bitcoin']['usd'])
+            logger.info(f"Using CoinGecko price: ${price:,.2f}")
+            return price
+    except Exception as e:
+        logger.error(f"CoinGecko API error: {e}")
+    
+    return None
 
 async def run_market_monitor(app):
     """Background loop to check prices independently of the bot"""
@@ -91,6 +113,7 @@ async def run_market_monitor(app):
             current_price = get_btc_price()
             if current_price:
                 now_ist = datetime.now(pytz.timezone('Asia/Kolkata'))
+                logger.info(f"Current BTC Price: ${current_price:,.2f} | Time: {now_ist.strftime('%H:%M:%S IST')}")
 
                 # 1. Update Session High/Low
                 if base_price:
@@ -117,10 +140,12 @@ async def run_market_monitor(app):
                            f"Sell Call Strike: ${high_strike:,.0f}\n"
                            f"Sell Put Strike: ${low_strike:,.0f}")
                     await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+                    logger.info("✅ 8:00 AM alert sent")
 
                 # 3. Midnight Reset
                 if now_ist.hour == 0 and now_ist.minute == 0:
                     daily_start_alert_sent = False
+                    logger.info("🔄 Midnight reset completed")
 
                 # 4. Breakout Alerts (Spot SL)
                 if base_price:
@@ -130,10 +155,12 @@ async def run_market_monitor(app):
                     if current_price >= high_limit and not high_alert_sent:
                         await app.bot.send_message(chat_id=CHAT_ID, text=f"🚨 <b>STOP LOSS HIT (+2%)</b>\nPrice: ${current_price:,.0f}", parse_mode='HTML')
                         high_alert_sent = True
+                        logger.info("🚨 High breakout alert sent")
                     
                     if current_price <= low_limit and not low_alert_sent:
                         await app.bot.send_message(chat_id=CHAT_ID, text=f"🚨 <b>STOP LOSS HIT (-2%)</b>\nPrice: ${current_price:,.0f}", parse_mode='HTML')
                         low_alert_sent = True
+                        logger.info("🚨 Low breakout alert sent")
 
                 # 5. 5:30 PM Close Report
                 if now_ist.hour == 17 and now_ist.minute == 30 and not daily_close_alert_sent:
@@ -141,10 +168,13 @@ async def run_market_monitor(app):
                         msg = f"🏁 <b>5:30 PM Close</b>\nHigh: ${session_high:,.0f}\nLow: ${session_low:,.0f}"
                         await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
                         daily_close_alert_sent = True
+                        logger.info("✅ 5:30 PM close alert sent")
+            else:
+                logger.warning("⚠️  Could not fetch BTC price from any source")
 
             await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
-            logger.error(f"Error in monitor: {e}")
+            logger.error(f"Error in monitor loop: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 async def post_init(application):
@@ -160,14 +190,6 @@ if __name__ == '__main__':
     
     if not BOT_TOKEN:
         logger.error("❌ ERROR: BOT_TOKEN environment variable is not set!")
-        logger.error("Please set BOT_TOKEN in Railway environment variables")
-        exit(1)
-    
-    # Validate token format
-    if not BOT_TOKEN.count(':') == 1 or len(BOT_TOKEN) < 40:
-        logger.error(f"❌ ERROR: BOT_TOKEN format appears invalid")
-        logger.error(f"Token should be in format: 1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ")
-        logger.error(f"Current token length: {len(BOT_TOKEN)} characters")
         exit(1)
     
     logger.info(f"✅ BOT_TOKEN found (length: {len(BOT_TOKEN)})")
@@ -175,7 +197,6 @@ if __name__ == '__main__':
     
     if not CHAT_ID:
         logger.warning("⚠️  WARNING: CHAT_ID not set - alerts will fail!")
-        logger.warning("Please set CHAT_ID in Railway environment variables")
     else:
         logger.info(f"✅ CHAT_ID found: {CHAT_ID}")
     
@@ -197,14 +218,4 @@ if __name__ == '__main__':
         logger.error(f"❌ FATAL ERROR: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
         logger.error("=" * 50)
-        logger.error("\nPossible causes:")
-        logger.error("1. Invalid bot token - check if token is correct")
-        logger.error("2. Bot was deleted in @BotFather")
-        logger.error("3. Network connectivity issues")
-        logger.error("4. Token has extra spaces or quotes")
-        logger.error("\nTo fix:")
-        logger.error("1. Go to @BotFather on Telegram")
-        logger.error("2. Create a new bot or get your existing bot token")
-        logger.error("3. Update BOT_TOKEN in Railway environment variables")
-        logger.error("4. Make sure there are no spaces or quotes around the token")
         raise
