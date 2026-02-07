@@ -56,9 +56,11 @@ trade_executed_today = False
 no_trade_reason = None
 btc_product_id = None
 
-import json
 
-# ... (imports remain the same) ...
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+import json
 
 # Global State
 # ... (existing globals) ...
