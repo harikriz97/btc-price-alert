@@ -66,6 +66,47 @@ import json
 # ... (existing globals) ...
 LOG_FILE = "trade_logs.json"
 
+def get_delta_products():
+    try:
+        response = requests.get(f"{DELTA_PUBLIC_URL}/v2/products", timeout=10)
+        if response.status_code == 200:
+            return response.json().get('result', [])
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching Delta products: {e}")
+        return []
+
+def get_btc_price():
+    global btc_product_id
+    
+    try:
+        if btc_product_id is None:
+            products = get_delta_products()
+            for product in products:
+                if product.get('symbol') == 'BTCUSD' and product.get('contract_type') == 'perpetual_futures':
+                    btc_product_id = product['id']
+                    break
+        
+        if btc_product_id:
+            response = requests.get(f"{DELTA_PUBLIC_URL}/v2/tickers/{btc_product_id}", timeout=10)
+            if response.status_code == 200:
+                ticker = response.json().get('result', {})
+                if 'mark_price' in ticker:
+                    return float(ticker['mark_price'])
+    except:
+        pass
+    
+    # Fallback to Binance
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
+        data = r.json()
+        if isinstance(data, dict) and 'price' in data:
+            return float(data['price'])
+    except:
+        pass
+    
+    return None
+
 def log_trade_decision(data):
     try:
         if os.path.exists(LOG_FILE):
