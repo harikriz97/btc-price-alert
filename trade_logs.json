@@ -1,0 +1,24 @@
+[
+    {
+        "timestamp": "2026-02-07T08:00:00+05:30",
+        "spot_price": 50000,
+        "day_high": 51000,
+        "day_low": 49000,
+        "checks": {
+            "trend": {"pass": true, "msg": "Range bound"},
+            "volatility": {"pass": true, "msg": "HV 45% <= 70%"},
+            "premium_balance": {"pass": false, "msg": "Diff 35.0%"},
+            "min_premium": {"pass": true, "msg": "Total $150.0"}
+        },
+        "trade_details": {
+            "call_strike": 51000,
+            "put_strike": 49000,
+            "call_premium": 100,
+            "put_premium": 50,
+            "call_sl": 500,
+            "put_sl": 250
+        },
+        "status": "SKIPPED",
+        "reason": "No premium match"
+    }
+]

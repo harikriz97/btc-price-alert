@@ -56,133 +56,78 @@ trade_executed_today = False
 no_trade_reason = None
 btc_product_id = None
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+import json
 
-def get_delta_products():
-    try:
-        response = requests.get(f"{DELTA_PUBLIC_URL}/v2/products", timeout=10)
-        if response.status_code == 200:
-            return response.json().get('result', [])
-        return []
-    except Exception as e:
-        logger.error(f"Error fetching Delta products: {e}")
-        return []
+# ... (imports remain the same) ...
 
-def get_btc_price():
-    global btc_product_id
-    
+# Global State
+# ... (existing globals) ...
+LOG_FILE = "trade_logs.json"
+
+def log_trade_decision(data):
     try:
-        if btc_product_id is None:
-            products = get_delta_products()
-            for product in products:
-                if product.get('symbol') == 'BTCUSD' and product.get('contract_type') == 'perpetual_futures':
-                    btc_product_id = product['id']
-                    break
+        if os.path.exists(LOG_FILE):
+            with open(LOG_FILE, 'r') as f:
+                logs = json.load(f)
+        else:
+            logs = []
         
-        if btc_product_id:
-            response = requests.get(f"{DELTA_PUBLIC_URL}/v2/tickers/{btc_product_id}", timeout=10)
-            if response.status_code == 200:
-                ticker = response.json().get('result', {})
-                if 'mark_price' in ticker:
-                    return float(ticker['mark_price'])
-    except:
-        pass
-    
-    # Fallback to Binance
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
-        data = r.json()
-        if isinstance(data, dict) and 'price' in data:
-            return float(data['price'])
-    except:
-        pass
-    
-    return None
-
-def get_historical_volatility():
-    return 50
-
-def get_options_chain(spot_price, expiry_date=None):
-    products = get_delta_products()
-    options = []
-    
-    if expiry_date is None:
-        today = datetime.now(pytz.timezone('Asia/Kolkata'))
-        days_ahead = 4 - today.weekday()
-        if days_ahead <= 0:
-            days_ahead += 7
-        expiry_date = (today + timedelta(days=days_ahead)).strftime('%d%b%y').upper()
-    
-    for product in products:
-        symbol = product.get('symbol', '')
-        if 'BTC' in symbol and expiry_date in symbol:
-            if product.get('contract_type') == 'call_options':
-                options.append({
-                    'type': 'CALL',
-                    'strike': float(product.get('strike_price', 0)),
-                    'symbol': symbol,
-                    'product_id': product['id']
-                })
-            elif product.get('contract_type') == 'put_options':
-                options.append({
-                    'type': 'PUT',
-                    'strike': float(product.get('strike_price', 0)),
-                    'symbol': symbol,
-                    'product_id': product['id']
-                })
-    
-    return options
-
-def find_best_strikes(spot_price, otm_pct, options_chain):
-    call_target = spot_price * (1 + otm_pct)
-    put_target = spot_price * (1 - otm_pct)
-    
-    calls = [opt for opt in options_chain if opt['type'] == 'CALL']
-    puts = [opt for opt in options_chain if opt['type'] == 'PUT']
-    
-    best_call = min(calls, key=lambda x: abs(x['strike'] - call_target)) if calls else None
-    best_put = min(puts, key=lambda x: abs(x['strike'] - put_target)) if puts else None
-    
-    return best_call, best_put
-
-def get_option_premium(product_id):
-    try:
-        response = requests.get(f"{DELTA_PUBLIC_URL}/v2/tickers/{product_id}", timeout=10)
-        if response.status_code == 200:
-            ticker = response.json().get('result', {})
-            if 'mark_price' in ticker:
-                return float(ticker['mark_price'])
-    except:
-        pass
-    return None
+        logs.append(data)
+        
+        # Keep last 30 days
+        if len(logs) > 30:
+            logs = logs[-30:]
+            
+        with open(LOG_FILE, 'w') as f:
+            json.dump(logs, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to log trade: {e}")
 
 def check_market_conditions(spot_price, d_high, d_low):
+    results = {
+        "timestamp": datetime.now(pytz.timezone('Asia/Kolkata')).isoformat(),
+        "spot_price": spot_price,
+        "day_high": d_high,
+        "day_low": d_low,
+        "checks": {}
+    }
+    
+    is_valid = True
+    reject_reason = None
+    
+    # 1. Trend Check
     if d_high is None or d_low is None:
-        return True, None
-        
-    price_range = d_high - d_low
-    if price_range > 0:
-        upper_threshold = d_low + (price_range * 0.8)
-        lower_threshold = d_low + (price_range * 0.2)
-        
-        if spot_price >= upper_threshold:
-            return False, "Strong uptrend detected (price near day high)"
-        if spot_price <= lower_threshold:
-            return False, "Strong downtrend detected (price near day low)"
+        results['checks']['trend'] = {"pass": True, "msg": "Insufficient data"}
+    else:
+        price_range = d_high - d_low
+        if price_range > 0:
+            upper_threshold = d_low + (price_range * 0.8)
+            lower_threshold = d_low + (price_range * 0.2)
+            
+            if spot_price >= upper_threshold:
+                is_valid = False
+                reject_reason = "Strong uptrend detected"
+                results['checks']['trend'] = {"pass": False, "msg": f"Price near High ({spot_price} >= {upper_threshold})"}
+            elif spot_price <= lower_threshold:
+                is_valid = False
+                reject_reason = "Strong downtrend detected"
+                results['checks']['trend'] = {"pass": False, "msg": f"Price near Low ({spot_price} <= {lower_threshold})"}
+            else:
+                results['checks']['trend'] = {"pass": True, "msg": "Range bound"}
     
+    # 2. Volatility Check
     hv = get_historical_volatility()
+    results['hv'] = hv
     if hv > MAX_HV:
-        return False, f"Historical Volatility too high ({hv}% > {MAX_HV}%)"
+        is_valid = False
+        if not reject_reason: reject_reason = f"High HV ({hv}%)"
+        results['checks']['volatility'] = {"pass": False, "msg": f"HV {hv}% > {MAX_HV}%"}
+    else:
+        results['checks']['volatility'] = {"pass": True, "msg": f"HV {hv}% <= {MAX_HV}%"}
     
-    return True, None
+    return is_valid, reject_reason, results
 
-def calculate_position_size(premium):
-    if premium <= 0:
-        return 0
-    sl_per_contract = premium * 4
-    contracts = math.floor(RISK_PER_DAY_USD / sl_per_contract)
-    return max(1, contracts)
+# ... (get_options_chain, etc. remain the same) ...
 
 async def execute_entry(app, spot_price):
     global call_entry_price, put_entry_price, call_strike, put_strike
@@ -191,9 +136,14 @@ async def execute_entry(app, spot_price):
     
     logger.info(f"🎯 Attempting entry at spot price: ${spot_price:,.2f}")
     
-    is_suitable, reason = check_market_conditions(spot_price, day_high, day_low)
+    is_suitable, reason, log_data = check_market_conditions(spot_price, day_high, day_low)
+    log_data['status'] = "SKIPPED"
+    
     if not is_suitable:
         no_trade_reason = reason
+        log_data['reason'] = reason
+        log_trade_decision(log_data)
+        
         msg = f"⛔ <b>NO TRADE TODAY</b>\n\n<b>Reason:</b> {reason}"
         await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
         logger.warning(f"Trade skipped: {reason}")
@@ -202,6 +152,8 @@ async def execute_entry(app, spot_price):
     options_chain = get_options_chain(spot_price)
     if not options_chain:
         no_trade_reason = "No options chain available"
+        log_data['reason'] = no_trade_reason
+        log_trade_decision(log_data)
         msg = f"⛔ <b>NO TRADE TODAY</b>\n\n<b>Reason:</b> No options found on Delta Exchange"
         await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
         return
@@ -213,6 +165,8 @@ async def execute_entry(app, spot_price):
     
     if not best_call or not best_put:
         no_trade_reason = "Could not find suitable strikes"
+        log_data['reason'] = no_trade_reason
+        log_trade_decision(log_data)
         msg = f"⛔ <b>NO TRADE TODAY</b>\n\n<b>Reason:</b> Suitable strikes not available"
         await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
         return
@@ -222,29 +176,13 @@ async def execute_entry(app, spot_price):
     
     if not call_premium or not put_premium:
         no_trade_reason = "Could not fetch option premiums"
+        log_data['reason'] = no_trade_reason
+        log_trade_decision(log_data)
         msg = f"⛔ <b>NO TRADE TODAY</b>\n\n<b>Reason:</b> Unable to fetch premiums"
         await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
         return
     
-    premium_ratio = abs(call_premium - put_premium) / max(call_premium, put_premium)
-    if premium_ratio > PREMIUM_BALANCE_RATIO:
-        no_trade_reason = f"Premium imbalance (Call: ${call_premium:.1f}, Put: ${put_premium:.1f})"
-        msg = (f"⛔ <b>NO TRADE TODAY</b>\n\n"
-               f"<b>Reason:</b> Premium asymmetry\n"
-               f"Call: ${call_premium:.1f} | Put: ${put_premium:.1f}\n"
-               f"Diff: {premium_ratio*100:.1f}% (Max: {PREMIUM_BALANCE_RATIO*100:.0f}%)")
-        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
-        return
-    
-    combined_premium = call_premium + put_premium
-    if combined_premium < MIN_COMBINED_PREMIUM:
-        no_trade_reason = f"Combined premium too low (${combined_premium:.1f})"
-        msg = (f"⛔ <b>NO TRADE TODAY</b>\n\n"
-               f"<b>Reason:</b> Combined premium too low\n"
-               f"Total: ${combined_premium:.1f} | Min: ${MIN_COMBINED_PREMIUM}")
-        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
-        return
-    
+    # Calculate potential trade details
     call_qty = calculate_position_size(call_premium)
     put_qty = calculate_position_size(put_premium)
     
@@ -254,6 +192,62 @@ async def execute_entry(app, spot_price):
     put_entry_price = put_premium
     call_sl = call_premium * SL_MULTIPLIER
     put_sl = put_premium * SL_MULTIPLIER
+    
+    log_data['trade_details'] = {
+        "call_strike": call_strike,
+        "put_strike": put_strike,
+        "call_premium": call_premium,
+        "put_premium": put_premium,
+        "call_sl": call_sl,
+        "put_sl": put_sl
+    }
+    
+    premium_ratio = abs(call_premium - put_premium) / max(call_premium, put_premium)
+    log_data['checks']['premium_balance'] = {
+        "pass": premium_ratio <= PREMIUM_BALANCE_RATIO,
+        "value": premium_ratio,
+        "msg": f"Diff {premium_ratio*100:.1f}%"
+    }
+    
+    if premium_ratio > PREMIUM_BALANCE_RATIO:
+        no_trade_reason = "No premium match"
+        log_data['reason'] = "No premium match"
+        log_trade_decision(log_data)
+        
+        msg = (
+            f"⛔ <b>NO TRADE TODAY</b>\n\n"
+            f"<b>Reason:</b> No premium match\n"
+            f"due to this today no trade like that for now just tell no premium match\n\n"
+            f"📞 <b>CALL</b> ${call_strike:,.0f}\n"
+            f"  Entry: ${call_premium:.1f} | SL: ${call_sl:.1f}\n\n"
+            f"📉 <b>PUT</b> ${put_strike:,.0f}\n"
+            f"  Entry: ${put_premium:.1f} | SL: ${put_sl:.1f}\n\n"
+            f"Diff: {premium_ratio*100:.1f}% (Max: {PREMIUM_BALANCE_RATIO*100:.0f}%)"
+        )
+        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+        return
+
+    combined_premium = call_premium + put_premium
+    log_data['checks']['min_premium'] = {
+        "pass": combined_premium >= MIN_COMBINED_PREMIUM,
+        "value": combined_premium,
+        "msg": f"Total ${combined_premium:.1f}"
+    }
+    
+    if combined_premium < MIN_COMBINED_PREMIUM:
+        no_trade_reason = f"Combined premium too low (${combined_premium:.1f})"
+        log_data['reason'] = no_trade_reason
+        log_trade_decision(log_data)
+        
+        msg = (f"⛔ <b>NO TRADE TODAY</b>\n\n"
+               f"<b>Reason:</b> Combined premium too low\n"
+               f"Total: ${combined_premium:.1f} | Min: ${MIN_COMBINED_PREMIUM}")
+        await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+        return
+
+    log_data['status'] = "EXECUTED"
+    log_trade_decision(log_data)
+
     call_quantity = call_qty
     put_quantity = put_qty
     position_active = True
