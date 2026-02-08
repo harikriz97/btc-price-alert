@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 import json
 import os
 from datetime import datetime
@@ -26,6 +26,8 @@ def index():
 def get_logs():
     logs = load_logs()
     return jsonify(logs)
+
+
 
 @app.template_filter('format_datetime')
 def format_datetime(value):
