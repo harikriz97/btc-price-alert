@@ -113,5 +113,42 @@
         "exit_reason": "TEST_EXIT",
         "exit_price": 69357.47027237,
         "exit_time": "2026-02-08T12:51:05.010537+05:30"
+    },
+    {
+        "timestamp": "2026-02-10T08:40:09.229368+05:30",
+        "spot_price": 69760.85750348,
+        "day_high": null,
+        "day_low": null,
+        "checks": {
+            "trend": {
+                "pass": true,
+                "msg": "Insufficient data"
+            },
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.24% > 70%"
+            },
+            "premium_balance": {
+                "pass": true,
+                "value": 0.11628295651754714,
+                "msg": "Diff 11.6%"
+            },
+            "min_premium": {
+                "pass": true,
+                "value": 57.11509742,
+                "msg": "Total $57.1"
+            }
+        },
+        "hv": 82.24,
+        "trade_details": {
+            "call_strike": 71200.0,
+            "put_strike": 67400.0,
+            "call_premium": 26.7946745,
+            "put_premium": 30.32042292,
+            "call_sl": 133.97337249999998,
+            "put_sl": 151.6021146
+        },
+        "status": "MANUAL_CHECK (SKIPPED)",
+        "reason": "High HV (82.24%)"
     }
 ]

@@ -1,28 +1,63 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trade Bot Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8f9fa; }
-        .card { box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .status-executed { color: #28a745; font-weight: bold; }
-        .status-skipped { color: #dc3545; font-weight: bold; }
-        .check-pass { color: #28a745; }
-        .check-fail { color: #dc3545; }
-        pre { background-color: #f1f1f1; padding: 10px; border-radius: 5px; }
+        body {
+            background-color: #f8f9fa;
+        }
+
+        .card {
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .status-executed {
+            color: #28a745;
+            font-weight: bold;
+        }
+
+        .status-skipped {
+            color: #dc3545;
+            font-weight: bold;
+        }
+
+        .status-virtual {
+            color: #0d6efd;
+            /* Bootstrap Primary Blue */
+            font-weight: bold;
+        }
+
+        .check-pass {
+            color: #28a745;
+        }
+
+        .check-fail {
+            color: #dc3545;
+        }
+
+        pre {
+            background-color: #f1f1f1;
+            padding: 10px;
+            border-radius: 5px;
+        }
     </style>
 </head>
+
 <body>
     <div class="container py-5">
         <h1 class="mb-4 text-center">🤖 Trade Bot Dashboard</h1>
-        
+
         <div class="card">
             <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Run History</h5>
-                <button class="btn btn-sm btn-light" onclick="loadLogs()">Refresh</button>
+                <div>
+                    <button class="btn btn-sm btn-success me-2" onclick="runCheck()">Run Strategy Check</button>
+                    <button class="btn btn-sm btn-light" onclick="loadLogs()">Refresh</button>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -33,6 +68,7 @@
                                 <th>Spot Price</th>
                                 <th>Status</th>
                                 <th>Reason</th>
+                                <th>Exit</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -60,6 +96,8 @@
         </div>
     </div>
 
+
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const formatTime = (isoString) => {
@@ -86,35 +124,81 @@
 
                 logs.forEach((log, index) => {
                     const row = document.createElement('tr');
-                    const statusClass = log.status === 'EXECUTED' ? 'status-executed' : 'status-skipped';
-                    
+                    let statusClass = 'status-skipped';
+                    if (log.status === 'EXECUTED') statusClass = 'status-executed';
+                    else if (log.status && log.status.includes('VIRTUAL')) statusClass = 'status-virtual';
+
                     row.innerHTML = `
                         <td>${formatTime(log.timestamp)}</td>
                         <td>$${log.spot_price.toLocaleString()}</td>
                         <td class="${statusClass}">${log.status}</td>
                         <td>${log.reason || '-'}</td>
+                        <td>${log.exit_reason || '-'}</td>
                         <td>
-                            <button class="btn btn-sm btn-primary" onclick="showDetails(${index})">
-                                View Criteria
+                            <button class="btn btn-sm btn-info me-1" onclick="showDetails(${index})">
+                                View
+                            </button>
+                            <button class="btn btn-sm btn-warning" onclick="sendTelegram(${index})">
+                                📢 TG
                             </button>
                         </td>
                     `;
                     tbody.appendChild(row);
-                    
-                    // Store log data for modal
-                    row.dataset.log = JSON.stringify(log);
                 });
-                
+
                 window.currentLogs = logs;
             } catch (error) {
                 console.error('Error loading logs:', error);
             }
         }
 
+        async function runCheck() {
+            if (!confirm("Run manual market analysis?")) return;
+            try {
+                // Show loading state
+                const btn = document.querySelector('button[onclick="runCheck()"]');
+                const originalText = btn.innerText;
+                btn.innerText = "Running...";
+                btn.disabled = true;
+
+                const response = await fetch('/api/run_check', { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    alert("Check Complete: " + result.message);
+                    loadLogs(); // Refresh logs to see new entry
+                } else {
+                    alert("Error: " + result.message);
+                }
+
+                // Reset button
+                btn.innerText = originalText;
+                btn.disabled = false;
+            } catch (e) {
+                alert("Error running check: " + e);
+                document.querySelector('button[onclick="runCheck()"]').disabled = false;
+            }
+        }
+
+        async function sendTelegram(index) {
+            if (!confirm("Send this alert to Telegram?")) return;
+            try {
+                const response = await fetch('/api/send_telegram', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ index: index })
+                });
+                const result = await response.json();
+                alert(result.message);
+            } catch (e) {
+                alert("Error sending alert: " + e);
+            }
+        }
+
         function showDetails(index) {
             const log = window.currentLogs[index];
             const content = document.getElementById('modal-content');
-            
+
             let detailsHtml = `
                 <div class="alert alert-secondary">
                     <strong>Timestamp:</strong> ${formatTime(log.timestamp)}<br>
@@ -130,7 +214,7 @@
                     ${renderCheck(log.checks.min_premium, "Min Premium")}
                 </div>
             `;
-            
+
             if (log.trade_details) {
                 detailsHtml += `
                     <h6 class="mt-4">Potential/Actual Trade Setup</h6>
@@ -162,7 +246,7 @@
                     </div>
                 `;
             }
-            
+
             content.innerHTML = detailsHtml;
             new bootstrap.Modal(document.getElementById('detailModal')).show();
         }
@@ -171,4 +255,5 @@
         loadLogs();
     </script>
 </body>
+
 </html>
