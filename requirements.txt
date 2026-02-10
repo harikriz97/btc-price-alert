@@ -1,6 +1,0 @@
-requests==2.31.0
-pytz==2024.1
-python-telegram-bot[job-queue]==20.8
-flask==3.0.0
-gunicorn==21.2.0
-matplotlib==3.8.2
