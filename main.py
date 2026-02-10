@@ -667,6 +667,82 @@ async def check_exit_conditions(app, spot_price):
             await notify_telegram(app, msg)
         return
 
+def analyze_market(spot_price):
+    """
+    Run the full analysis for a given spot price and return the log entry.
+    Does NOT execute trades or send notifications.
+    """
+    # 1. Fetch Context Data
+    candles = get_daily_candles()
+    hv = get_historical_volatility(candles)
+    
+    d_high = None
+    d_low = None
+    
+    is_suitable, reason, log_data = check_market_conditions(spot_price, d_high, d_low)
+    
+    # 2. Base Log Data
+    log_data['timestamp'] = datetime.now(pytz.timezone('Asia/Kolkata')).isoformat()
+    log_data['spot_price'] = spot_price
+    log_data['hv'] = hv
+    
+    # 3. Select Strikes
+    otm_pct = OTM_LOW_IV if hv < 30 else OTM_PERCENTAGE
+    options_chain = get_options_chain(spot_price)
+    best_call, best_put = select_strategy_strikes(spot_price, otm_pct, options_chain)
+    
+    if best_call and best_put:
+         call_premium = best_call['premium']
+         put_premium = best_put['premium']
+         
+         log_data['trade_details'] = {
+            "call_strike": best_call['strike'],
+            "put_strike": best_put['strike'],
+            "call_premium": call_premium,
+            "put_premium": put_premium,
+            "call_sl": call_premium * SL_MULTIPLIER,
+            "put_sl": put_premium * SL_MULTIPLIER
+        }
+         
+         # Premium Balance Check
+         premium_ratio = abs(call_premium - put_premium) / max(call_premium, put_premium) if max(call_premium, put_premium) > 0 else 1.0
+         log_data['checks']['premium_balance'] = {
+            "pass": premium_ratio <= PREMIUM_BALANCE_RATIO,
+            "value": premium_ratio,
+            "msg": f"Diff {premium_ratio*100:.1f}%"
+        }
+         
+         if premium_ratio > PREMIUM_BALANCE_RATIO:
+             log_data['status'] = "SKIPPED"
+             log_data['reason'] = f"Premium imbalance ({premium_ratio*100:.0f}%)"
+             return log_data
+
+         combined_premium = call_premium + put_premium
+         log_data['checks']['min_premium'] = {
+            "pass": combined_premium >= MIN_COMBINED_PREMIUM,
+            "value": combined_premium,
+            "msg": f"Total ${combined_premium:.1f}"
+        }
+         
+         if combined_premium < MIN_COMBINED_PREMIUM:
+             log_data['status'] = "SKIPPED"
+             log_data['reason'] = f"Combined premium low (${combined_premium:.1f})"
+             return log_data
+
+         # Checks Passed
+         if is_suitable:
+             log_data['status'] = "EXECUTED" # Or "SIGNAL"
+             log_data['reason'] = "Strategy Valid"
+         else:
+             log_data['status'] = "SKIPPED"
+             log_data['reason'] = reason
+
+    else:
+        log_data['status'] = "SKIPPED"
+        log_data['reason'] = "Options Chain Unavailable (No Today Expiry?)"
+        
+    return log_data
+
 async def run_market_monitor(app):
     global base_price, day_high, day_low, prev_day_high, prev_day_low
     global trade_executed_today, no_trade_reason, position_active
@@ -675,6 +751,9 @@ async def run_market_monitor(app):
     logger.info(f"   OTM: {OTM_PERCENTAGE*100}%")
     logger.info(f"   SL: {SL_MULTIPLIER}x entry")
     logger.info(f"   Risk: ${RISK_PER_DAY_USD}/leg")
+
+
+
     
     while True:
         try:

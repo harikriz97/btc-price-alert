@@ -97,6 +97,27 @@ def send_telegram():
         print(f"Telegram Exception: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/run_check', methods=['POST'])
+def run_check():
+    import main
+    try:
+        spot = main.get_btc_price()
+        if not spot:
+            return jsonify({"status": "error", "message": "Could not fetch Spot Price"}), 500
+            
+        # Run Analysis
+        log_data = main.analyze_market(spot)
+        log_data['status'] = f"MANUAL_CHECK ({log_data.get('status', 'UNKNOWN')})"
+        
+        # Save to logs
+        main.log_trade_decision(log_data)
+        
+        return jsonify({"status": "success", "message": f"Check Complete: {log_data['status']}", "data": log_data})
+        
+    except Exception as e:
+        print(f"Run Check Error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 
 @app.template_filter('format_datetime')
