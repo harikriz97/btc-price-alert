@@ -251,88 +251,128 @@ def get_historical_volatility(candles=None):
     
     return 40.0 # Default fallback
 
+def get_all_tickers():
+    try:
+        response = requests.get(f"{DELTA_PUBLIC_URL}/v2/tickers", timeout=10)
+        if response.status_code == 200:
+            result = response.json().get('result', [])
+            return {t['product_id']: t for t in result}
+    except Exception as e:
+        logger.error(f"Error fetching tickers: {e}")
+    return {}
+
 def get_options_chain(spot_price):
     try:
         products = get_delta_products()
+        tickers = get_all_tickers()
         chain = []
         now = datetime.now(pytz.timezone('Asia/Kolkata'))
+        today = now.date()
         
         for p in products:
-            # Debug output showed 'underlying_asset' is a dict, keys might vary.
-            # Safest to check symbol or contract_unit_currency
             is_btc = False
             ua = p.get('underlying_asset')
             if isinstance(ua, dict) and ua.get('symbol') == 'BTC':
                 is_btc = True
-            elif p.get('symbol', '').find('BTC') != -1: # Fallback
+            elif p.get('symbol', '').find('BTC') != -1:
                 is_btc = True
                 
             if p.get('contract_type') in ['call_options', 'put_options'] and is_btc:
-                # Check active status
                 if p.get('state') == 'live':
                     strike = float(p.get('strike_price', 0))
+                    
+                    # Parse Expiry
+                    expiry_str = p.get('settlement_time')
+                    expiry_date = None
+                    if expiry_str:
+                        try:
+                            # Format usually: "2025-02-10T12:30:00Z"
+                            expiry_dt = datetime.fromisoformat(expiry_str.replace('Z', '+00:00'))
+                            expiry_date = expiry_dt.astimezone(pytz.timezone('Asia/Kolkata')).date()
+                        except:
+                            pass
+                    
+                    # Premium from tickers
+                    premium = 0.0
+                    ticker = tickers.get(p['id'])
+                    if ticker:
+                        premium = float(ticker.get('mark_price', 0))
+
                     chain.append({
                         "id": p['id'],
                         "symbol": p['symbol'],
                         "type": "call" if p['contract_type'] == 'call_options' else "put",
                         "strike": strike,
-                        "expiry": p['settlement_time'] # ISO string or timestamp
+                        "expiry": expiry_date,
+                        "premium": premium
                     })
         return chain
     except Exception as e:
         logger.error(f"Error getting options chain: {e}")
         return []
 
-def find_best_strikes(spot_price, otm_pct, chain):
+def select_strategy_strikes(spot_price, otm_pct, chain):
+    """
+    1. Filter for TODAY'S expiry.
+    2. Calculate 2% OTM Strikes.
+    3. Pick the side with LOWER premium at 2% OTM.
+    4. Match the OTHER side with closest premium (+/- 20 tolerance ideal, but pick closest).
+    """
     if not chain:
         return None, None
         
+    now = datetime.now(pytz.timezone('Asia/Kolkata'))
+    today = now.date()
+    
+    # 1. Filter Expiry (Today ONLY)
+    todays_options = [o for o in chain if o['expiry'] == today]
+    
+    if not todays_options:
+        logger.warning(f"No options found for expiry: {today}")
+        return None, None
+
     target_call_strike = spot_price * (1 + otm_pct)
     target_put_strike = spot_price * (1 - otm_pct)
     
-    # Filter by nearest expiry (assume options are daily/weekly)
-    # We want options expiring TODAY or TOMORROW usually
-    # For simplicity, we pick the strikes closest to target from ALL active options
-    # Improvements: Filter by Expiry Date
-    
-    calls = [o for o in chain if o['type'] == 'call']
-    puts = [o for o in chain if o['type'] == 'put']
+    calls = [o for o in todays_options if o['type'] == 'call']
+    puts = [o for o in todays_options if o['type'] == 'put']
     
     if not calls or not puts:
         return None, None
         
+    # 2. Find 2% OTM Options
     # Sort by distance to target strike
-    best_call = min(calls, key=lambda x: abs(x['strike'] - target_call_strike))
-    best_put = min(puts, key=lambda x: abs(x['strike'] - target_put_strike))
+    best_otm_call = min(calls, key=lambda x: abs(x['strike'] - target_call_strike))
+    best_otm_put = min(puts, key=lambda x: abs(x['strike'] - target_put_strike))
     
-    return {"product_id": best_call['id'], "strike": best_call['strike']}, \
-           {"product_id": best_put['id'], "strike": best_put['strike']}
-
-def get_option_premium(product_id):
-    try:
-        response = requests.get(f"{DELTA_PUBLIC_URL}/v2/tickers/{product_id}", timeout=5)
-        if response.status_code == 200:
-            result = response.json().get('result', {})
-            # Use mark price or mid price
-            return float(result.get('mark_price', 0))
-    except Exception as e:
-        logger.error(f"Error fetching premium for {product_id}: {e}")
-    return 0.0
-
-def calculate_position_size(premium):
-    # Loss per contract = Premium * (SL_MULTIPLIER - 1)
-    # Risk = RISK_PER_DAY_USD
-    if premium <= 0: return 0
-    loss_per_contract = premium * (SL_MULTIPLIER - 1)
-    if loss_per_contract <= 0: return 1
+    # 3. Compare Premiums
+    # We take the CHEAPER one as the anchor
+    anchor_leg = None
+    match_leg = None
+    is_call_anchor = False
     
-    qty = RISK_PER_DAY_USD / loss_per_contract
-    # Round down to integer, min 1
-    return max(1, int(qty * 10)) # Assuming 1 contract = 0.1 BTC? No, Delta has different sizes. 
-    # Usually strictly 1 contract = 1 USD or similar? 
-    # Let's return purely calculated qty. If contract value is small, this might be large.
-    # Safest: int(qty)
-    return max(1, int(qty))
+    if best_otm_call['premium'] <= best_otm_put['premium']:
+        anchor_leg = best_otm_call
+        is_call_anchor = True
+        logger.info(f"Anchor: CALL {anchor_leg['symbol']} (${anchor_leg['premium']})")
+    else:
+        anchor_leg = best_otm_put
+        is_call_anchor = False
+        logger.info(f"Anchor: PUT {anchor_leg['symbol']} (${anchor_leg['premium']})")
+        
+    # 4. Match the OTHER side
+    target_premium = anchor_leg['premium']
+    other_side_options = puts if is_call_anchor else calls
+    
+    # Sort by premium distance
+    matched_leg = min(other_side_options, key=lambda x: abs(x['premium'] - target_premium))
+    
+    logger.info(f"Matched: {matched_leg['symbol']} (${matched_leg['premium']}) vs Target ${target_premium}")
+    
+    if is_call_anchor:
+        return anchor_leg, matched_leg
+    else:
+        return matched_leg, anchor_leg
 
 
 async def execute_entry(app, spot_price):
@@ -346,45 +386,40 @@ async def execute_entry(app, spot_price):
     # 1. Market Checks (Trend, Volatility)
     is_suitable, reason, log_data = check_market_conditions(spot_price, day_high, day_low)
     
-    # 2. Fetch Data for Reporting (regardless of suitability)
+    # 2. Fetch Data
     candles = get_daily_candles()
     hv = get_historical_volatility(candles)
     otm_pct = OTM_LOW_IV if hv < 30 else OTM_PERCENTAGE
+    
+    # Get Chain & Select Strikes
     options_chain = get_options_chain(spot_price)
+    best_call, best_put = select_strategy_strikes(spot_price, otm_pct, options_chain)
     
     report_details = f"📍 <b>Spot:</b> ${spot_price:,.0f}\n📊 <b>HV:</b> {hv:.1f}%\n"
     
-    best_call, best_put = None, None
     call_premium, put_premium = 0.0, 0.0
     chart_path = None
     
-    if options_chain:
-        best_call, best_put = find_best_strikes(spot_price, otm_pct, options_chain)
-        if best_call and best_put:
-             call_premium = get_option_premium(best_call['product_id'])
-             put_premium = get_option_premium(best_put['product_id'])
-             
-             report_details += (
-                 f"\n📞 <b>Call Strike (+2%):</b> ${best_call['strike']:.0f}\n"
-                 f"   Premium: ${call_premium:.1f}\n"
-                 f"📉 <b>Put Strike (-2%):</b> ${best_put['strike']:.0f}\n"
-                 f"   Premium: ${put_premium:.1f}\n"
-                 f"💰 <b>Combined:</b> ${call_premium + put_premium:.1f}"
-             )
-             
-             # Populate log data with available details immediately
-             log_data['trade_details'] = {
-                "call_strike": best_call['strike'],
-                "put_strike": best_put['strike'],
-                "call_premium": call_premium,
-                "put_premium": put_premium,
-                "call_sl": call_premium * SL_MULTIPLIER,
-                "put_sl": put_premium * SL_MULTIPLIER
-            }
-        else:
-             report_details += "\n⚠️ Strikes not found."
+    if best_call and best_put:
+         call_premium = best_call['premium']
+         put_premium = best_put['premium']
+         
+         report_details += (
+             f"\n📞 <b>Call:</b> ${best_call['strike']:.0f} (Prem: ${call_premium:.1f})\n"
+             f"📉 <b>Put:</b> ${best_put['strike']:.0f} (Prem: ${put_premium:.1f})\n"
+             f"💰 <b>Combined:</b> ${call_premium + put_premium:.1f}"
+         )
+         
+         log_data['trade_details'] = {
+            "call_strike": best_call['strike'],
+            "put_strike": best_put['strike'],
+            "call_premium": call_premium,
+            "put_premium": put_premium,
+            "call_sl": call_premium * SL_MULTIPLIER,
+            "put_sl": put_premium * SL_MULTIPLIER
+        }
     else:
-        report_details += "\n⚠️ Option chain unavailable."
+         report_details += "\n⚠️ Strikes not found (No Today's Expiry?)"
 
     # Generate Chart
     c_strike = best_call['strike'] if best_call else None
