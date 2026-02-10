@@ -1,0 +1,24 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode
+.idea
+
+# Logs
+*.log
+trade_logs.json
+
+# Local Testing
+manual_check.py
+debug_*.py
+*.png

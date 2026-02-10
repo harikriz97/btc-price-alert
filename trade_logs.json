@@ -1,0 +1,154 @@
+[
+    {
+        "timestamp": "2026-02-07T08:00:00+05:30",
+        "spot_price": 50000,
+        "day_high": 51000,
+        "day_low": 49000,
+        "checks": {
+            "trend": {
+                "pass": true,
+                "msg": "Range bound"
+            },
+            "volatility": {
+                "pass": true,
+                "msg": "HV 45% <= 70%"
+            },
+            "premium_balance": {
+                "pass": false,
+                "msg": "Diff 35.0%"
+            },
+            "min_premium": {
+                "pass": true,
+                "msg": "Total $150.0"
+            }
+        },
+        "trade_details": {
+            "call_strike": 51000,
+            "put_strike": 49000,
+            "call_premium": 100,
+            "put_premium": 50,
+            "call_sl": 500,
+            "put_sl": 250
+        },
+        "status": "SKIPPED",
+        "reason": "No premium match"
+    },
+    {
+        "timestamp": "2026-02-08T12:21:37.663020+05:30",
+        "spot_price": 69292.82368932,
+        "day_high": 69292.82368932,
+        "day_low": 69292.82368932,
+        "checks": {
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.06% > 70%"
+            }
+        },
+        "hv": 82.06,
+        "status": "SKIPPED",
+        "reason": "High HV (82.06%)"
+    },
+    {
+        "timestamp": "2026-02-08T12:25:22.996201+05:30",
+        "spot_price": 69298.36829568,
+        "day_high": 69298.36829568,
+        "day_low": 69298.36829568,
+        "checks": {
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.05% > 70%"
+            }
+        },
+        "hv": 82.05,
+        "status": "SKIPPED",
+        "reason": "High HV (82.05%)"
+    },
+    {
+        "timestamp": "2026-02-08T12:28:13.168101+05:30",
+        "spot_price": 69280.9034951,
+        "day_high": 69280.9034951,
+        "day_low": 69280.9034951,
+        "checks": {
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.05% > 70%"
+            }
+        },
+        "hv": 82.05,
+        "status": "SKIPPED",
+        "reason": "High HV (82.05%)"
+    },
+    {
+        "timestamp": "2026-02-08T12:50:55.425221+05:30",
+        "spot_price": 69357.47027237,
+        "day_high": 69357.47027237,
+        "day_low": 69357.47027237,
+        "checks": {
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.07% > 70%"
+            },
+            "premium_balance": {
+                "pass": false,
+                "value": 0.9988703791093141,
+                "msg": "Diff 99.9%"
+            },
+            "min_premium": {
+                "pass": true,
+                "value": 2970.7919884000003,
+                "msg": "Total $2970.8"
+            }
+        },
+        "hv": 82.07,
+        "trade_details": {
+            "call_strike": 70800.0,
+            "put_strike": 68000.0,
+            "call_premium": 3.35208211,
+            "put_premium": 2967.43990629,
+            "call_sl": 16.76041055,
+            "put_sl": 14837.199531450002
+        },
+        "status": "VIRTUAL_TRACKING",
+        "reason": "Premium imbalance (100%)",
+        "exit_reason": "TEST_EXIT",
+        "exit_price": 69357.47027237,
+        "exit_time": "2026-02-08T12:51:05.010537+05:30"
+    },
+    {
+        "timestamp": "2026-02-10T08:40:09.229368+05:30",
+        "spot_price": 69760.85750348,
+        "day_high": null,
+        "day_low": null,
+        "checks": {
+            "trend": {
+                "pass": true,
+                "msg": "Insufficient data"
+            },
+            "volatility": {
+                "pass": false,
+                "msg": "HV 82.24% > 70%"
+            },
+            "premium_balance": {
+                "pass": true,
+                "value": 0.11628295651754714,
+                "msg": "Diff 11.6%"
+            },
+            "min_premium": {
+                "pass": true,
+                "value": 57.11509742,
+                "msg": "Total $57.1"
+            }
+        },
+        "hv": 82.24,
+        "trade_details": {
+            "call_strike": 71200.0,
+            "put_strike": 67400.0,
+            "call_premium": 26.7946745,
+            "put_premium": 30.32042292,
+            "call_sl": 133.97337249999998,
+            "put_sl": 151.6021146
+        },
+        "status": "MANUAL_CHECK (SKIPPED)",
+        "reason": "High HV (82.24%)"
+    }
+]
